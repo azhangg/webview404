@@ -6,7 +6,7 @@
         {
         }
 
-        public string Name { get; set; } = "检后健康管理系统";
+        public string Name { get; set; } = "404";
         public string Theme { get; set; } = "Light";
         public int Height { get; set; }
         public int Width { get; set; }
