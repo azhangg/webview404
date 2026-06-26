@@ -155,6 +155,13 @@ namespace WebView2Test
 
         private void Owner_StateChanged(object? sender, EventArgs e)
         {
+            if (_owner.WindowState == WindowState.Minimized)
+            {
+                if (IsVisible) Hide();
+                HideFloatingBall();
+                return;
+            }
+
             UpdatePosition();
             UpdateFullScreenUiState();
         }
