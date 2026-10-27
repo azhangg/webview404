@@ -8,6 +8,7 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\favicon.ico</ApplicationIcon>
 	<AssemblyName>WebView404</AssemblyName>
+    <Version>1.0.1</Version>
   </PropertyGroup>
 
   <ItemGroup>
