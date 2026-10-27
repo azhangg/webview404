@@ -257,7 +257,6 @@ namespace WebView2Test
 
             this.Left = left;
             this.Top = top;
-            Topmost = false;
 
             UpdateFloatingBallPosition();
         }
@@ -404,12 +403,20 @@ namespace WebView2Test
                 ShowInTaskbar = false,
                 AllowsTransparency = true,
                 Background = Brushes.Transparent,
-                Topmost = true,
                 ShowActivated = false,
                 WindowStartupLocation = WindowStartupLocation.Manual,
                 Focusable = false,
                 Content = border
             };
+
+            // 作为主窗口的拥有窗口：只浮在主窗口之上，不会盖住其它应用的全屏窗口
+            if (_owner.IsVisible)
+            {
+                floatingBallWindow.Owner = _owner;
+            }
+
+            // 点击/拖动悬浮球不抢激活，避免主窗口失焦后悬浮球反而沉到下面
+            floatingBallWindow.SourceInitialized += (_, _) => WindowStyleHelper.MakeNonActivatable(floatingBallWindow);
 
             _floatingBallButton = button;
             _floatingBallIndicator = indicator;
@@ -421,6 +428,12 @@ namespace WebView2Test
         private void ShowFloatingBall()
         {
             EnsureFloatingBallWindow();
+
+            // 兜底：创建时主窗口尚未显示的话，这里补上拥有关系
+            if (_floatingBallWindow is { Owner: null } && _owner.IsVisible)
+            {
+                _floatingBallWindow.Owner = _owner;
+            }
 
             if (_floatingBallWindow != null && !_floatingBallWindow.IsVisible)
             {
@@ -655,7 +668,6 @@ namespace WebView2Test
 
             Left = Math.Max(workingArea.Left, Math.Min(workingArea.Right - navWidth, targetLeft));
             Top = Math.Max(workingArea.Top, Math.Min(workingArea.Bottom - navHeight, targetTop));
-            Topmost = true;
         }
 
         private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
