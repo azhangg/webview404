@@ -1,6 +1,9 @@
-﻿using System.IO;
+﻿using System.Diagnostics;
+using System.IO;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using WebView2Test.Helpers;
 using WebView2Test.HostObjects;
@@ -13,10 +16,21 @@ namespace WebView2Test
     /// </summary>
     public partial class MainWindow : Window
     {
+        /// <summary>长按 ESC 退出全屏所需的时长（秒）。</summary>
+        private const double EscHoldSeconds = 3;
+
         private AppSettings _appSettings;
         private WebViewSettings _webViewSettings;
 
         private NavigationToolWindow? _navTool;
+
+        private readonly FullScreenHelper _fullScreen;
+        private readonly DispatcherTimer _escTimer;
+        private readonly Stopwatch _escHoldWatch = new();
+
+        private KeyboardInputHook? _keyboardHook;
+        private EscHintWindow? _escHintWindow;
+        private bool _isEscHeld;
 
         /// <summary>内置 favicon，页面没有图标时回落使用。</summary>
         private readonly BitmapSource? _defaultIcon;
@@ -37,6 +51,13 @@ namespace WebView2Test
 
             InitializeComponent();
 
+            _fullScreen = new FullScreenHelper(this);
+            _escTimer = new DispatcherTimer(DispatcherPriority.Input)
+            {
+                Interval = TimeSpan.FromMilliseconds(40)
+            };
+            _escTimer.Tick += EscTimer_Tick;
+
             _defaultIcon = FaviconHelper.LoadDefault();
             if (_defaultIcon is not null)
             {
@@ -44,17 +65,25 @@ namespace WebView2Test
             }
 
             Closed += MainWindow_Closed;
+            Deactivated += MainWindow_Deactivated;
             InitApp();
             Loaded += MainWindow_Loaded;
         }
 
         private void MainWindow_Closed(object? sender, EventArgs e)
         {
+            _escTimer.Stop();
+            _escHintWindow?.Close();
+            _escHintWindow = null;
+            _keyboardHook?.Dispose();
+            _keyboardHook = null;
             WindowIconHelper.ReleaseAll(_iconHandles);
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            InstallKeyboardHook();
+
             await InitWebViewAsync();
 
             if (_webViewSettings.DevelopmentMode)
@@ -123,6 +152,168 @@ namespace WebView2Test
         {
             // 每次导航重新开始，允许本次导航再同步一次图标
             _iconAppliedForNavigation = false;
+        }
+
+        // ===== F11 全屏 / 长按 ESC 3 秒退出 =====
+
+        /// <summary>
+        /// 安装低级键盘钩子。WebView2 获得焦点后 WPF 收不到键盘事件，钩子负责捕获 F11 / ESC；
+        /// 安装失败时退化为窗口自身的键盘事件。
+        /// </summary>
+        private void InstallKeyboardHook()
+        {
+            var hook = new KeyboardInputHook
+            {
+                KeyDownFilter = HandleHotkeyDown,
+                KeyUpFilter = HandleHotkeyUp
+            };
+
+            if (hook.TryInstall())
+            {
+                _keyboardHook = hook;
+                return;
+            }
+
+            hook.Dispose();
+
+            PreviewKeyDown += MainWindow_PreviewKeyDown;
+            PreviewKeyUp += MainWindow_PreviewKeyUp;
+        }
+
+        private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (HandleHotkeyDown(e.Key))
+            {
+                e.Handled = true;
+            }
+        }
+
+        private void MainWindow_PreviewKeyUp(object sender, KeyEventArgs e)
+        {
+            if (HandleHotkeyUp(e.Key))
+            {
+                e.Handled = true;
+            }
+        }
+
+        /// <summary>
+        /// 快捷键按下：F11 切换全屏；全屏中 ESC 开始 3 秒长按计时。
+        /// 返回 true 表示吞掉按键，不再传给网页。
+        /// </summary>
+        private bool HandleHotkeyDown(Key key)
+        {
+            switch (key)
+            {
+                case Key.F11:
+                    ToggleFullScreen();
+                    return true;
+
+                case Key.Escape when _fullScreen.IsFullScreen:
+                    BeginEscHold();
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// 快捷键抬起：长按 ESC 中途松手则取消退出全屏。
+        /// </summary>
+        private bool HandleHotkeyUp(Key key)
+        {
+            if (key != Key.Escape || !_isEscHeld)
+            {
+                return false;
+            }
+
+            EndEscHold();
+            return true;
+        }
+
+        private void MainWindow_Deactivated(object? sender, EventArgs e)
+        {
+            // 窗口失焦时中断长按，避免切走后还在后台倒计时
+            if (_isEscHeld)
+            {
+                EndEscHold();
+            }
+        }
+
+        private void ToggleFullScreen()
+        {
+            if (_fullScreen.IsFullScreen)
+            {
+                ExitFullScreen();
+            }
+            else
+            {
+                EnterFullScreen();
+            }
+        }
+
+        private void EnterFullScreen()
+        {
+            if (_fullScreen.IsFullScreen)
+            {
+                return;
+            }
+
+            EndEscHold();
+            _fullScreen.Enter();
+        }
+
+        private void ExitFullScreen()
+        {
+            EndEscHold();
+
+            if (_fullScreen.IsFullScreen)
+            {
+                _fullScreen.Exit();
+            }
+        }
+
+        private void BeginEscHold()
+        {
+            // 键盘自动重复会多次触发 KeyDown，只认第一次
+            if (_isEscHeld)
+            {
+                return;
+            }
+
+            _isEscHeld = true;
+            _escHoldWatch.Restart();
+
+            _escHintWindow ??= new EscHintWindow();
+            _escHintWindow.SetProgress(0);
+            _escHintWindow.ShowFor(this);
+
+            _escTimer.Start();
+        }
+
+        private void EndEscHold()
+        {
+            _escTimer.Stop();
+            _escHoldWatch.Reset();
+            _isEscHeld = false;
+            _escHintWindow?.Hide();
+        }
+
+        private void EscTimer_Tick(object? sender, EventArgs e)
+        {
+            if (!_isEscHeld)
+            {
+                EndEscHold();
+                return;
+            }
+
+            var progress = _escHoldWatch.Elapsed.TotalSeconds / EscHoldSeconds;
+            _escHintWindow?.SetProgress(progress);
+
+            if (progress >= 1)
+            {
+                ExitFullScreen();
+            }
         }
 
         private async void CoreWebView2_FaviconChanged(object? sender, object e)
